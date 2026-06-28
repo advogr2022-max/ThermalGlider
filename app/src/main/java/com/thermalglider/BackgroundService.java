@@ -8,7 +8,6 @@ import android.content.Intent;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
-import android.os.Environment;
 import android.os.IBinder;
 import android.util.Log;
 
@@ -63,6 +62,7 @@ public class BackgroundService extends Service {
     private float launchAltitude = 0;
     private boolean hasLaunchAlt = false;
 
+    private int batteryTick = 0;
     private String basePath;
 
     @Override
@@ -74,7 +74,7 @@ public class BackgroundService extends Service {
 
             basePath = getExternalFilesDir(null) != null
                 ? getExternalFilesDir(null).getAbsolutePath() + "/ThermalGlider"
-                : Environment.getExternalStorageDirectory().getAbsolutePath() + "/ThermalGlider";
+                : getFilesDir().getAbsolutePath() + "/ThermalGlider";
 
             // Инициализация компонентов
             sensorController = new SensorController();
@@ -179,22 +179,31 @@ public class BackgroundService extends Service {
                 flightState.launchAltitude = launchAltitude;
             }
 
-            // 5. Сессия полёта
-            if (flightState.speed > 3 && flightState.altitudeAGL > 50) {
-                if (!flightState.isFlying) {
-                    flightState.flightStartTimeMs = nowMs;
-                    flightState.isFlying = true;
-                    // Старт IGC
-                    if (igcLogger != null && !igcLogger.isRecording()) {
-                        igcLogger.startRecording(nowMs);
-                        flightState.isRecording = true;
-                    }
-                    Log.d(TAG, "Flight started");
+            // 5. Сессия полёта — НЕ запускать в реплее или в настройках
+            if (flightState.isReplayMode) {
+                flightState.isFlying = false;
+                flightState.isRecording = false;
+                if (igcLogger != null && igcLogger.isRecording()) {
+                    igcLogger.stopRecording();
                 }
-            } else if (flightState.isFlying && flightState.speed < 1 && flightState.altitudeAGL < 20) {
-                if (nowMs - flightState.flightStartTimeMs > 60000) {
+            } else if (flightState.isInSettings) {
+                // В настройках — не автостартуем
+            } else {
+                if (flightState.speed > 3 && flightState.altitudeAGL > 50) {
+                    if (!flightState.isFlying) {
+                        flightState.flightStartTimeMs = nowMs;
+                        flightState.isFlying = true;
+                        if (igcLogger != null && !igcLogger.isRecording()) {
+                            igcLogger.startRecording(nowMs);
+                            flightState.isRecording = true;
+                        }
+                        Log.d(TAG, "Flight started");
+                    }
+                } else if (flightState.isFlying
+                    && flightState.speed < 1
+                    && flightState.altitudeAGL < 20
+                    && nowMs - flightState.flightStartTimeMs > 60000) {
                     flightState.isFlying = false;
-                    // Стоп IGC
                     if (igcLogger != null && igcLogger.isRecording()) {
                         igcLogger.stopRecording();
                         flightState.isRecording = false;
@@ -204,7 +213,7 @@ public class BackgroundService extends Service {
             }
 
             // 5b. IGC запись точек
-            if (igcLogger != null && igcLogger.isRecording() && flightState.hasGpsFix) {
+            if (!flightState.isReplayMode && igcLogger != null && igcLogger.isRecording() && flightState.hasGpsFix) {
                 igcLogger.addFix(flightState.latitude, flightState.longitude,
                     flightState.baroAltitude, flightState.gpsAltitude,
                     flightState.speed, flightState.bearing, nowMs);
@@ -218,13 +227,15 @@ public class BackgroundService extends Service {
             }
 
             // 7. FlightManager — термики, ветер, L/D, эллипс, автомасштаб
-            int viewW = 1080; // TODO: получать из MapView
+            int viewW = 1080;
             int viewH = 1920;
             flightManager.tick(flightState, nowMs, viewW, viewH);
 
             // 8. Обновление времени + батарея
             flightState.updateSession(nowMs);
-            flightState.batteryPercent = getBatteryLevel();
+            if (batteryTick++ % 50 == 0) { // каждые 5с (50×100мс)
+                flightState.batteryPercent = getBatteryLevel();
+            }
 
             // 9. Звук варио
             if (soundGenerator != null) {
@@ -240,11 +251,13 @@ public class BackgroundService extends Service {
             Intent intent = new Intent(MainActivity.ACTION_FLIGHT_UPDATE);
             sendBroadcast(intent);
 
-        } catch (Exception e) {
-            Log.e(TAG, "Tick error", e);
+        } catch (Throwable t) {
+            Log.e(TAG, "Tick error", t);
+        } finally {
+            if (running) {
+                tickHandler.postDelayed(this::tick, TICK_INTERVAL_MS);
+            }
         }
-
-        tickHandler.postDelayed(this::tick, TICK_INTERVAL_MS);
     }
 
     @Override

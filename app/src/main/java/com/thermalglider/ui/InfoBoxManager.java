@@ -45,8 +45,16 @@ public class InfoBoxManager {
         "ETA", "Terrain", "Thermal", "Circle", "AS", "AS Det", "Set"
     };
 
+    // Кэшированные Paint'ы (не аллоцировать каждый кадр)
+    private final Paint titlePaint = new Paint();
+    private final Paint valuePaint = new Paint();
+    private final Paint unitPaint = new Paint();
+
     public InfoBoxManager(Context context) {
         this.context = context;
+        titlePaint.setAntiAlias(true);
+        valuePaint.setAntiAlias(true);
+        unitPaint.setAntiAlias(true);
         // Дефолтная раскладка (9 виджетов)
         setDefaultLayout();
     }
@@ -79,14 +87,6 @@ public class InfoBoxManager {
     /** Отрисовка всех виджетов в сетке 3×3 */
     public void draw(Canvas canvas) {
         if (boxes.isEmpty()) return;
-
-        Paint titlePaint = new Paint();
-        Paint valuePaint = new Paint();
-        Paint unitPaint = new Paint();
-
-        titlePaint.setAntiAlias(true);
-        valuePaint.setAntiAlias(true);
-        unitPaint.setAntiAlias(true);
 
         for (int i = 0; i < boxes.size() && i < cols * rows; i++) {
             int r = i / cols;

@@ -42,6 +42,8 @@ public class SensorController implements SensorEventListener {
 
     public SensorController() {}
 
+    private static final int SENSOR_RATE_US = 20_000; // 50 Гц
+
     public void start(Context context) {
         sensorManager = (SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
         if (sensorManager == null) return;
@@ -57,21 +59,21 @@ public class SensorController implements SensorEventListener {
         hasGyro = gyro != null;
         hasMag = mag != null;
 
-        // Регистрируем
+        // Регистрируем — явный микросекундный интервал вместо SENSOR_DELAY_FASTEST
         if (hasBarometer) {
-            sensorManager.registerListener(this, barometer, SensorManager.SENSOR_DELAY_NORMAL);
+            sensorManager.registerListener(this, barometer, SENSOR_RATE_US * 5); // baro реже
         }
         if (hasAccel) {
-            sensorManager.registerListener(this, accel, SensorManager.SENSOR_DELAY_FASTEST); // 50 Гц
+            sensorManager.registerListener(this, accel, SENSOR_RATE_US);
         }
         if (hasGyro) {
-            sensorManager.registerListener(this, gyro, SensorManager.SENSOR_DELAY_FASTEST);
+            sensorManager.registerListener(this, gyro, SENSOR_RATE_US);
         }
         if (hasMag) {
-            sensorManager.registerListener(this, mag, SensorManager.SENSOR_DELAY_FASTEST);
+            sensorManager.registerListener(this, mag, SENSOR_RATE_US);
         }
         if (rotVec != null) {
-            sensorManager.registerListener(this, rotVec, SensorManager.SENSOR_DELAY_GAME);
+            sensorManager.registerListener(this, rotVec, SENSOR_RATE_US * 2); // rotVec реже
         }
 
         isRegistered = true;

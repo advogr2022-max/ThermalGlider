@@ -28,6 +28,19 @@ public class SettingsActivity extends Activity {
     private static final String PREFS_NAME = "thermalglider_settings";
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        // Сигнал BackgroundService не стартовать авто-полёт в настройках
+        com.thermalglider.AppState.getInstance().flightState.isInSettings = true;
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        com.thermalglider.AppState.getInstance().flightState.isInSettings = false;
+    }
+
+    @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);

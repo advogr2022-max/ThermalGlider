@@ -3,21 +3,32 @@ package com.thermalglider.engine;
 import com.thermalglider.data.FlightState;
 import com.thermalglider.util.GeoUtils;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
- * WindEstimator — оценка ветра из дрейфа спиралей + crab angle.
+ * WindEstimator — оценка ветра из дрейфа спиралей.
+ *
+ * Алгоритм Reichmann:
+ * 1. Накопить точки одного полного круга (|cumulativeTurn| ≥ 360°)
+ * 2. Найти центр масс точек круга
+ * 3. Сравнить с центром предыдущего круга → ветер = смещение / время между кругами
  *
  * Раздел 8 ТЗ.
  */
 public class WindEstimator {
 
-    // Для спирального дрейфа
-    private static final long ESTIMATE_WINDOW_MS = 30000;
-    private static final float MIN_CIRCLING_FOR_WIND = 1.5f; // минимум оборотов
+    // Точки текущего круга
+    private final List<double[]> currentCircle = new ArrayList<>(64);
+    private long currentCircleStartMs = 0;
 
-    private final float[] circleLat = new float[50];
-    private final float[] circleLon = new float[50];
-    private final long[] circleTime = new long[50];
-    private int circleCount = 0;
+    // Центр и время предыдущего завершённого круга
+    private double[] prevCircleCenter = null;
+    private long prevCircleEndMs = 0;
+
+    // Кумулятивный поворот для детекции полного круга
+    private float cumulativeTurn = 0;
+    private float lastBearing = -1;
 
     // Выходные значения
     private float windSpeed;
@@ -28,19 +39,30 @@ public class WindEstimator {
     private float smoothSpeed, smoothDir;
     private boolean hasSmooth = false;
 
+    private static final float MIN_CIRCLING_SPEED = 4f;
+    private static final float MAX_CIRCLING_SPEED = 15f;
+
     /** Вызов из FlightManager.tick() */
     public void update(FlightState state, long nowMs) {
         if (!state.hasGpsFix) return;
 
-        // Метод 1: из спирального дрейфа
-        if (state.isCircling && state.thermalSector != null) {
-            onCircleCenter(state.thermalSector.centerLat, state.thermalSector.centerLon, nowMs);
+        if (state.isCircling) {
+            accumulateCirclePoint(state, nowMs);
+            checkCircleComplete(state, nowMs);
+        } else {
+            // Выход из спирали — сбрасываем накопление
+            if (!currentCircle.isEmpty()) {
+                currentCircle.clear();
+                cumulativeTurn = 0;
+                lastBearing = -1;
+            }
         }
 
-        // Метод 2: из crab angle (прямой полёт, малый vario)
+        // Crab angle — если есть компас
         if (!state.isCircling && Math.abs(state.varioFiltered) < 1.3f
             && state.speed > 0.5f && state.windConfidence < 80) {
-            estimateFromCrab(state);
+            // estimateFromCrab — требует SensorController.heading, заглушка
+            // TODO: при интеграции компаса
         }
 
         // Запись в state
@@ -49,65 +71,74 @@ public class WindEstimator {
         state.windConfidence = confidence;
     }
 
-    /** Дрейф центров спиралей */
-    private void onCircleCenter(double lat, double lon, long nowMs) {
-        if (circleCount >= 50) {
-            // Сдвиг
-            System.arraycopy(circleLat, 1, circleLat, 0, circleCount - 1);
-            System.arraycopy(circleLon, 1, circleLon, 0, circleCount - 1);
-            System.arraycopy(circleTime, 1, circleTime, 0, circleCount - 1);
-            circleCount--;
+    private void accumulateCirclePoint(FlightState state, long nowMs) {
+        if (currentCircle.isEmpty()) {
+            currentCircleStartMs = nowMs;
+            cumulativeTurn = 0;
+            lastBearing = state.bearing;
+        } else {
+            // Накапливаем угол поворота (кратчайший путь)
+            float delta = state.bearing - lastBearing;
+            if (delta > 180) delta -= 360;
+            if (delta < -180) delta += 360;
+            cumulativeTurn += delta;
+            lastBearing = state.bearing;
         }
-        circleLat[circleCount] = (float) lat;
-        circleLon[circleCount] = (float) lon;
-        circleTime[circleCount] = nowMs;
-        circleCount++;
-
-        if (circleCount < 2) return;
-
-        // Очистка старых
-        long cutoff = nowMs - ESTIMATE_WINDOW_MS;
-        int oldest = 0;
-        while (oldest < circleCount && circleTime[oldest] < cutoff) oldest++;
-        if (oldest > 0) {
-            int newCount = circleCount - oldest;
-            System.arraycopy(circleLat, oldest, circleLat, 0, newCount);
-            System.arraycopy(circleLon, oldest, circleLon, 0, newCount);
-            System.arraycopy(circleTime, oldest, circleTime, 0, newCount);
-            circleCount = newCount;
-        }
-
-        if (circleCount < 2) return;
-
-        double firstLat = circleLat[0], firstLon = circleLon[0];
-        double lastLat = circleLat[circleCount - 1], lastLon = circleLon[circleCount - 1];
-        double dt = (circleTime[circleCount - 1] - circleTime[0]) / 1000.0;
-
-        if (dt < 5) return;
-
-        double distM = GeoUtils.haversineM(firstLat, firstLon, lastLat, lastLon);
-        double driftSpeed = distM / dt;
-
-        if (driftSpeed > 0.3f && driftSpeed < 30) {
-            double driftBearing = GeoUtils.bearingDeg(firstLat, firstLon, lastLat, lastLon);
-            float newDir = (float) ((driftBearing + 180) % 360); // meteo: откуда
-            float newSpeed = (float) driftSpeed;
-            int newConf = Math.min(circleCount * 10, 100);
-
-            smoothWind(newSpeed, newDir, newConf);
-        }
+        currentCircle.add(new double[]{state.latitude, state.longitude, nowMs});
     }
 
-    /** Crab angle: разница heading и track */
-    private void estimateFromCrab(FlightState state) {
-        // Упрощённо: heading ≈ bearing из GPS
-        float airspeed = 9.0f; // типичная скорость параплана
-        float crab = state.bearing - state.bearing; // будет 0 без компаса
-        // Без внешнего компаса crab не определить
-        // TODO: при интеграции компаса из rotation vector
+    private void checkCircleComplete(FlightState state, long nowMs) {
+        // Полный круг = |cumulativeTurn| >= 360°
+        if (Math.abs(cumulativeTurn) < 360f) return;
+
+        // Центр масс точек круга
+        double[] center = computeCentroid(currentCircle);
+        long circleDurationMs = nowMs - currentCircleStartMs;
+
+        if (prevCircleCenter != null && circleDurationMs > 5000) {
+            // Ветер = смещение центра / время между кругами
+            double driftM = GeoUtils.haversineM(
+                prevCircleCenter[0], prevCircleCenter[1], center[0], center[1]);
+            double dtSec = (nowMs - prevCircleEndMs) / 1000.0;
+
+            if (driftM > 2 && driftM < 200 && dtSec > 5) {
+                double driftSpeed = driftM / dtSec;
+                double driftBearing = GeoUtils.bearingDeg(
+                    prevCircleCenter[0], prevCircleCenter[1], center[0], center[1]);
+                // meteo "откуда" = driftBearing + 180
+                float newDir = (float) ((driftBearing + 180) % 360);
+                float newSpeed = (float) driftSpeed;
+                int newConf = Math.min(confidence + 25, 100);
+
+                smoothWind(newSpeed, newDir, newConf);
+            }
+        }
+
+        // Сохраняем как предыдущий круг
+        prevCircleCenter = center;
+        prevCircleEndMs = nowMs;
+
+        // Начинаем новый круг
+        currentCircle.clear();
+        currentCircleStartMs = nowMs;
+        cumulativeTurn = 0;
+        lastBearing = state.bearing;
+        // Сохраняем текущую точку как первую нового круга
+        currentCircle.add(new double[]{state.latitude, state.longitude, nowMs});
     }
 
-    /** Экспоненциальное сглаживание с учётом уверенности */
+    /** Центр масс набора точек */
+    private static double[] computeCentroid(List<double[]> pts) {
+        double lat = 0, lon = 0;
+        for (double[] p : pts) {
+            lat += p[0];
+            lon += p[1];
+        }
+        int n = pts.size();
+        return new double[]{lat / n, lon / n};
+    }
+
+    /** Экспоненциальное сглаживание */
     private void smoothWind(float newSpeed, float newDir, int newConf) {
         if (!hasSmooth) {
             smoothSpeed = newSpeed;
@@ -115,9 +146,7 @@ public class WindEstimator {
             confidence = newConf;
             hasSmooth = true;
         } else {
-            float alpha = 0.1f + confidence * 0.005f;
-            alpha = Math.min(alpha, 0.6f);
-
+            float alpha = 0.3f;
             float[] avg = GeoUtils.vectorAverage(
                 smoothSpeed, smoothDir, newSpeed, newDir, alpha);
             smoothSpeed = avg[0];
@@ -125,7 +154,6 @@ public class WindEstimator {
             confidence = Math.min(confidence + 5, 100);
         }
 
-        // Порог: ветер <3 м/с не обновляем (шум)
         if (smoothSpeed >= 0.5f) {
             windSpeed = smoothSpeed;
             windDirection = smoothDir;
@@ -133,7 +161,10 @@ public class WindEstimator {
     }
 
     public void reset() {
-        circleCount = 0;
+        currentCircle.clear();
+        prevCircleCenter = null;
+        cumulativeTurn = 0;
+        lastBearing = -1;
         windSpeed = 0;
         windDirection = 0;
         confidence = 0;

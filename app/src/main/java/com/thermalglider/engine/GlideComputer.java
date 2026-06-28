@@ -40,6 +40,10 @@ public class GlideComputer {
     private static final float POLAR_MAX_SPEED = 15.3f;      // м/с
     private static final float POLAR_MAX_SINK = 3.0f;        // м/с
 
+    // Дельта-триггер для эллипса (не пересчитывать каждый тик)
+    private float lastEllipseAlt = -999;
+    private float lastEllipseRatio = -999;
+
     /** Вызов из FlightManager.tick() */
     public void update(FlightState state, long nowMs) {
         if (!state.hasGpsFix) return;
@@ -68,9 +72,15 @@ public class GlideComputer {
             glideRangeKm = state.altitudeAGL * glideRatio / 1000.0f;
         }
 
-        // 6. Эллипс долёта
+        // 6. Эллипс долёта — только при значимом изменении (>5%)
+        boolean altChanged = Math.abs(state.altitudeAGL - lastEllipseAlt) > lastEllipseAlt * 0.05f;
+        boolean ratioChanged = Math.abs(glideRatio - lastEllipseRatio) > lastEllipseRatio * 0.05f;
         if (state.altitudeAGL > 10 && glideRatio > 1) {
-            glideEllipse = computeGlideEllipse(state);
+            if (altChanged || ratioChanged || glideEllipse == null) {
+                glideEllipse = computeGlideEllipse(state);
+                lastEllipseAlt = state.altitudeAGL;
+                lastEllipseRatio = glideRatio;
+            }
         } else {
             glideEllipse = null;
         }
@@ -178,5 +188,7 @@ public class GlideComputer {
         glideRangeKm = 0;
         sinkRate = 0;
         glideEllipse = null;
+        lastEllipseAlt = -999;
+        lastEllipseRatio = -999;
     }
 }

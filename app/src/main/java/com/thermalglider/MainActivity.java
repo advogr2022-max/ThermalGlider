@@ -1,17 +1,15 @@
 package com.thermalglider;
 
-import com.thermalglider.power.PowerManager;
-import com.thermalglider.ui.SettingsActivity;
-
 import android.Manifest;
+import android.app.Activity;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
@@ -23,11 +21,15 @@ import com.thermalglider.data.LandingFieldDB;
 import com.thermalglider.data.OpenAirParser;
 import com.thermalglider.data.SystemStatus;
 import com.thermalglider.i18n.I18n;
+import com.thermalglider.igc.IgcReplay;
+import com.thermalglider.power.PowerManager;
+import com.thermalglider.ui.SettingsActivity;
 import com.thermalglider.util.Units;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.nio.file.Files;
 
 /**
  * ThermalGlider — единственный экран.
@@ -45,6 +47,9 @@ public class MainActivity extends android.app.Activity {
     private OpenAirParser airspaceParser = new OpenAirParser();
     private I18n i18n;
     private PowerManager powerManager;
+    private IgcReplay igcReplay;
+    private static final int REQUEST_IGC_OPEN = 200;
+    private static final String TAG = "MainActivity";
 
     private final BroadcastReceiver flightReceiver = new BroadcastReceiver() {
         @Override
@@ -62,13 +67,35 @@ public class MainActivity extends android.app.Activity {
         mapView = new MapView(this);
         setContentView(mapView);
 
+        // Колбэки long-press диалога
+        mapView.setLongPressActionListener(new MapView.LongPressActionListener() {
+            @Override
+            public void onTracksClicked() {
+                Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType("*/*");
+                startActivityForResult(intent, REQUEST_IGC_OPEN);
+            }
+            @Override
+            public void onSettingsClicked() {
+                startActivity(new Intent(MainActivity.this, SettingsActivity.class));
+            }
+            @Override
+            public void onExitClicked() {
+                finishAffinity();
+            }
+        });
+
         powerManager = new PowerManager(this);
 
         // Инициализация директорий
         initDirectories();
 
         // Инициализация i18n
-        String basePath = Environment.getExternalStorageDirectory().getAbsolutePath();
+        java.io.File extDir = getExternalFilesDir(null);
+        String basePath = extDir != null
+            ? extDir.getAbsolutePath()
+            : getFilesDir().getAbsolutePath();
         i18n = new I18n(basePath, getPreferences(MODE_PRIVATE));
 
         // Инициализация БД площадок
@@ -86,12 +113,10 @@ public class MainActivity extends android.app.Activity {
             }
         }
 
-        // Регистрация ресивера (RECEIVER_NOT_EXPORTED = API 33+)
-        if (Build.VERSION.SDK_INT >= 33) {
-            registerReceiver(flightReceiver, new IntentFilter(ACTION_FLIGHT_UPDATE), Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            registerReceiver(flightReceiver, new IntentFilter(ACTION_FLIGHT_UPDATE));
-        }
+        // Регистрация ресивера — RECEIVER_NOT_EXPORTED на всех API 26+
+        // (на 26-32 флаг игнорируется, на 33+ защищает от внешних broadcast)
+        registerReceiver(flightReceiver, new IntentFilter(ACTION_FLIGHT_UPDATE),
+            Context.RECEIVER_NOT_EXPORTED);
 
         checkPermissionsAndStart();
     }
@@ -201,6 +226,80 @@ public class MainActivity extends android.app.Activity {
             startForegroundService(intent);
         } else {
             startService(intent);
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQUEST_IGC_OPEN && resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
+            startIgcReplay(data.getData());
+        }
+    }
+
+    /** Запуск реплея из IGC-файла */
+    private void startIgcReplay(Uri igcUri) {
+        try {
+            // Копируем во внутренний кэш
+            InputStream is = getContentResolver().openInputStream(igcUri);
+            if (is == null) {
+                Toast.makeText(this, "Не удалось открыть файл", Toast.LENGTH_LONG).show();
+                return;
+            }
+            File tmp = new File(getCacheDir(), "replay_" + System.currentTimeMillis() + ".igc");
+            FileOutputStream fos = new FileOutputStream(tmp);
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = is.read(buf)) > 0) fos.write(buf, 0, n);
+            fos.close();
+            is.close();
+
+            if (igcReplay != null && igcReplay.isPlaying()) {
+                igcReplay.stop();
+            }
+
+            igcReplay = new IgcReplay();
+            igcReplay.setCallback(new IgcReplay.ReplayCallback() {
+                @Override
+                public void onReplayFix(double lat, double lon, float altGps, float altPress,
+                                        float speed, float bearing, long simTimeMs) {
+                    FlightState fs = AppState.getInstance().flightState;
+                    fs.latitude = lat;
+                    fs.longitude = lon;
+                    fs.gpsAltitude = altGps;
+                    fs.baroAltitude = altPress > 0 ? altPress : altGps;
+                    fs.speed = speed;
+                    fs.bearing = bearing;
+                    fs.hasGpsFix = true;
+                    fs.isReplayMode = true;
+                    fs.lastUpdateMs = simTimeMs;
+                }
+
+                @Override
+                public void onReplayProgress(int index, int total) {
+                }
+
+                @Override
+                public void onReplayFinished() {
+                    FlightState fs = AppState.getInstance().flightState;
+                    fs.isReplayMode = false;
+                    fs.hasGpsFix = false;
+                    runOnUiThread(() ->
+                        Toast.makeText(MainActivity.this, "Реплей завершён", Toast.LENGTH_SHORT).show());
+                }
+            });
+
+            if (igcReplay.load(tmp.getAbsolutePath())) {
+                AppState.getInstance().flightState.reset();
+                igcReplay.start();
+                Toast.makeText(this, "Реплей запущен (" + igcReplay.getTotal() + " точек)",
+                    Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(this, "Файл не содержит IGC-данных", Toast.LENGTH_LONG).show();
+            }
+        } catch (Exception e) {
+            android.util.Log.e(TAG, "Replay start failed", e);
+            Toast.makeText(this, "Ошибка: " + e.getMessage(), Toast.LENGTH_LONG).show();
         }
     }
 

@@ -70,6 +70,34 @@ public class MapView extends View {
     private boolean tileInitDone = false;
     private int lastTileZoom = -1;
 
+    // Pending tile requests для дедупликации
+    private final java.util.Set<String> pendingTileRequests = new java.util.HashSet<>();
+
+    // Кэшированные Paint'ы (не аллоцировать каждый кадр)
+    private final Paint tileBgPaint = makeTileBgPaint();
+    private final Paint tileBorderPaint = makeTileBorderPaint();
+
+    private static Paint makeTileBgPaint() {
+        Paint p = new Paint();
+        p.setColor(Color.rgb(25, 30, 35));
+        return p;
+    }
+    private static Paint makeTileBorderPaint() {
+        Paint p = new Paint();
+        p.setColor(Color.rgb(50, 55, 60));
+        p.setStrokeWidth(1);
+        return p;
+    }
+
+    public interface LongPressActionListener {
+        void onTracksClicked();
+        void onSettingsClicked();
+        void onExitClicked();
+    }
+    private LongPressActionListener longPressListener;
+
+    public void setLongPressActionListener(LongPressActionListener l) { this.longPressListener = l; }
+
     public MapView(Context context) {
         super(context);
         init();
@@ -180,6 +208,12 @@ public class MapView extends View {
                 flightState.flightDurationSec / 60, flightState.flightDurationSec % 60);
             text += "  \u2191" + altText + "  " + timeText;
         }
+
+        // Индикатор реплея
+        if (flightState.isReplayMode) {
+            text = "\u25B6 REPLAY " + text;
+        }
+
         canvas.drawText(text, 20, statusBarH - 8, statusTextPaint);
     }
 
@@ -267,15 +301,8 @@ public class MapView extends View {
         int y0 = (int) Math.floor((90 - bounds[0]) / tileGeoDeg);
         int y1 = (int) Math.ceil((90 - bounds[2]) / tileGeoDeg);
 
-        // Фон для незагруженных тайлов
-        Paint bg = new Paint();
-        bg.setColor(Color.rgb(25, 30, 35));
-        canvas.drawRect(0, mapTop, w, mapBot, bg);
-
-        // Сетка границ тайлов (тонкая)
-        Paint border = new Paint();
-        border.setColor(Color.rgb(50, 55, 60));
-        border.setStrokeWidth(1);
+        // Фон — используем кэшированный Paint
+        canvas.drawRect(0, mapTop, w, mapBot, tileBgPaint);
 
         for (int tx = x0; tx <= x1; tx++) {
             for (int ty = y0; ty <= y1; ty++) {
@@ -285,7 +312,6 @@ public class MapView extends View {
                     bmp = tileCache.get(key);
                 }
 
-                // Гео-координаты углов тайла
                 double lon0 = tx * tileGeoDeg - 180;
                 double lat0 = 90 - ty * tileGeoDeg;
                 double lon1 = (tx + 1) * tileGeoDeg - 180;
@@ -300,25 +326,26 @@ public class MapView extends View {
                 float bottom = Math.max(pNW.y, pSE.y);
 
                 if (bmp != null && !bmp.isRecycled()) {
-                    // Рисуем реальный тайл
                     canvas.drawBitmap(bmp, null,
                         new android.graphics.RectF(left, top, right, bottom), null);
                 } else {
-                    // Placeholder + рамка
-                    Paint ph = new Paint();
-                    ph.setColor(Color.rgb(35, 40, 45));
-                    canvas.drawRect(left, top, right, bottom, ph);
-                    canvas.drawRect(left, top, right, bottom, border);
+                    // Placeholder — кэшированные Paint'ы
+                    canvas.drawRect(left, top, right, bottom, tileBgPaint);
+                    canvas.drawRect(left, top, right, bottom, tileBorderPaint);
 
-                    // Запрос загрузки
-                    final String fkey = key;
-                    final int fz = zoom, ftx = tx, fty = ty;
-                    tileLoader.requestTile(fz, ftx, fty, (z, x, y, bitmap) -> {
-                        synchronized (tileCache) {
-                            tileCache.put(fkey, bitmap);
-                        }
-                        invalidate();
-                    });
+                    // Дедуплицированный запрос
+                    if (!pendingTileRequests.contains(key)) {
+                        pendingTileRequests.add(key);
+                        final String fkey = key;
+                        final int fz = zoom, ftx = tx, fty = ty;
+                        tileLoader.requestTile(fz, ftx, fty, (z, x, y, bitmap) -> {
+                            synchronized (tileCache) {
+                                tileCache.put(fkey, bitmap);
+                            }
+                            pendingTileRequests.remove(fkey);
+                            postInvalidateOnAnimation();
+                        });
+                    }
                 }
             }
         }
@@ -368,11 +395,14 @@ public class MapView extends View {
                 "\u0412\u044B\u0445\u043E\u0434"
             }, (dialog, which) -> {
                 switch (which) {
+                    case 0:
+                        if (longPressListener != null) longPressListener.onTracksClicked();
+                        break;
                     case 1:
-                        ctx.startActivity(new Intent(ctx, SettingsActivity.class));
+                        if (longPressListener != null) longPressListener.onSettingsClicked();
                         break;
                     case 2:
-                        ((android.app.Activity) ctx).finishAffinity();
+                        if (longPressListener != null) longPressListener.onExitClicked();
                         break;
                 }
             })

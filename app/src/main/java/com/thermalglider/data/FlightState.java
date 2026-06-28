@@ -13,17 +13,19 @@ public class FlightState {
 
     // === Позиция ===
     /** Текущая широта (градусы) */
-    public double latitude;
+    public volatile double latitude;
     /** Текущая долгота (градусы) */
-    public double longitude;
+    public volatile double longitude;
     /** Высота MSL от GPS (м) */
-    public float gpsAltitude;
+    public volatile float gpsAltitude;
     /** Точность GPS (м), <100 = valid */
-    public float gpsAccuracy;
+    public volatile float gpsAccuracy;
     /** Курс от GPS (° от N) */
-    public float bearing;
+    public volatile float bearing;
     /** Скорость путевая (м/с) */
-    public float speed;
+    public volatile float speed;
+    /** GPS fix получен */
+    public volatile boolean hasGpsFix;
 
     // === Высота ===
     /** Высота по барометру, QNH скорректированная (м) */
@@ -100,6 +102,8 @@ public class FlightState {
     public boolean isReplayMode;
     /** Скорость реплея */
     public float replaySpeed;
+    /** В настройках? */
+    public volatile boolean isInSettings;
 
     // === Карта ===
     /** Целевой масштаб от AutoZoom (км/пиксель) */
@@ -113,7 +117,6 @@ public class FlightState {
 
     // === Спутники ===
     public int satelliteCount;
-    public boolean hasGpsFix;
 
     // === Батарея ===
     public int batteryPercent;
@@ -169,6 +172,7 @@ public class FlightState {
         isRecording = false;
         selectedField = null;
         isReplayMode = false;
+        isInSettings = false;
         replaySpeed = 1.0f;
         targetKmPerPx = 0.02f;
         currentKmPerPx = 0.02f;
