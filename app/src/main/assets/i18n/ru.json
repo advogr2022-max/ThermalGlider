@@ -1,0 +1,34 @@
+{
+  "app_name": "ThermalGlider",
+  "status": {
+    "gps_ok": "🛰 {satellites}",
+    "gps_no": "🛰 NO GPS",
+    "recording": "🔴 REC",
+    "baro_missing": "⚠ BARO",
+    "qnh_uncalibrated": "⚠ QNH",
+    "storage_full": "⚠ STORAGE"
+  },
+  "widgets": {
+    "vario": "Vario",
+    "altitude": "Высота",
+    "speed": "Скорость",
+    "heading": "Курс",
+    "ld": "L/D",
+    "wind": "Ветер",
+    "agl": "AGL",
+    "distance": "Дистанция",
+    "time": "Время",
+    "max_alt": "Макс",
+    "total_climb": "Набор",
+    "avg_ld": "Ср.L/D",
+    "avg_climb": "Ср.подъём",
+    "glide_to_goal": "Глисс.",
+    "goal_dist": "До цели",
+    "goal_time": "До цели",
+    "ground_elev": "Рельеф",
+    "near_thermal": "Термик",
+    "speed_circle": "Крутка",
+    "airspace": "ВП",
+    "airspace_info": "ВП дет."
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "app_name": "ThermalGlider",
+  "status": {
+    "gps_ok": "🛰 {satellites}",
+    "gps_no": "🛰 NO GPS",
+    "recording": "🔴 REC",
+    "baro_missing": "⚠ BARO",
+    "qnh_uncalibrated": "⚠ QNH",
+    "storage_full": "⚠ STORAGE"
+  },
+  "widgets": {
+    "vario": "Vario",
+    "altitude": "Altitude",
+    "speed": "Speed",
+    "heading": "Heading",
+    "ld": "L/D",
+    "wind": "Wind",
+    "agl": "AGL",
+    "distance": "Dist",
+    "time": "Time",
+    "max_alt": "Max",
+    "total_climb": "Climb",
+    "avg_ld": "Avg L/D",
+    "avg_climb": "Avg Climb",
+    "glide_to_goal": "Glide",
+    "goal_dist": "To Goal",
+    "goal_time": "To Goal",
+    "ground_elev": "Terrain",
+    "near_thermal": "Thermal",
+    "speed_circle": "Circle",
+    "airspace": "AS",
+    "airspace_info": "AS Det."
+  }
+}
